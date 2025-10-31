@@ -8,7 +8,7 @@ import argparse
 import struct
 
 # ==============================================================================
-# Константы, основанные на pdmdata.h (без изменений)
+# Константы, основанные на pdmdata.h
 # ==============================================================================
 N_OF_PIXELS_PER_PMT = 64
 N_OF_KI_PER_PMT = 8
@@ -31,31 +31,49 @@ def main():
         description="Проигрыватель файлов D3 Ловозера. Отправляет данные FRAME_SPB_2_L3_V0 по UDP.",
         formatter_class=argparse.RawTextHelpFormatter
     )
-    # Аргументы командной строки остаются без изменений
+    # Позиционные аргументы
     parser.add_argument(
         'filename', nargs='?', default=None,
         help='Имя входного файла. Если не указано, чтение производится из stdin.'
     )
     parser.add_argument(
-        'destination', type=str,
+        'destination', type=str, nargs='?',
         help='IP-адрес и порт в формате "ip:port" (например, "127.0.0.1:9090").'
     )
     parser.add_argument(
-        'pause', type=int,
+        'pause', type=int, nargs='?',
         help='Пауза между отправкой пакетов в миллисекундах.'
     )
+    # Опциональные флаги
     parser.add_argument(
         '-v', '--verbose', action='store_true',
         help='Включить отладочный вывод.'
     )
+    # ### НОВОЕ ИЗМЕНЕНИЕ 1: Опция для первого фрейма ###
+    parser.add_argument(
+        '--first-frame', action='store_true',
+        help='Отправить только первый фрейм из входных данных и завершить работу.'
+    )
+
+    # ### НОВОЕ ИЗМЕНЕНИЕ 2: Проверка на запуск без аргументов ###
+    if len(sys.argv) == 1:
+        parser.print_help()
+        sys.exit(0)
+
     args = parser.parse_args()
+
+    # Проверяем, что обязательные аргументы были предоставлены
+    if not all([args.destination, args.pause is not None]):
+        print("Ошибка: не указаны обязательные аргументы 'destination' и 'pause'.\n", file=sys.stderr)
+        parser.print_help()
+        sys.exit(1)
 
     try:
         ip_addr, port_str = args.destination.split(':')
         port = int(port_str)
         if not (0 < port < 65536):
-            raise ValueError("Port number must be between 1 and 65535")
-    except ValueError as e:
+            raise ValueError("Номер порта должен быть в диапазоне 1-65535")
+    except (ValueError, IndexError) as e:
         print(f"Ошибка: неверный формат адреса или порта '{args.destination}'. {e}", file=sys.stderr)
         sys.exit(1)
 
@@ -68,6 +86,8 @@ def main():
         sys.exit(1)
 
     input_stream = None
+    total_packets_sent = 0
+    
     try:
         if args.filename:
             input_stream = open(args.filename, 'rb')
@@ -76,13 +96,13 @@ def main():
             if args.verbose:
                 print("Чтение данных из stdin...", file=sys.stdout)
 
-        total_packets_sent = 0
         record_num = 0
+        done = False
 
-        while True:
+        while not done:
             record_data = input_stream.read(Z_DATA_TYPE_SCI_L3_V3_SIZE)
             if not record_data:
-                break
+                break # Конец файла/потока
             if len(record_data) < Z_DATA_TYPE_SCI_L3_V3_SIZE:
                 print(f"Ошибка: входной файл/поток обрезан.", file=sys.stderr)
                 break
@@ -95,15 +115,12 @@ def main():
                 udp_payload = bytearray()
                 frame_start_byte = FRAMES_OFFSET + (frame_idx * FRAME_SPB_2_L3_V0_SIZE_BYTES)
 
-                # ### ИЗМЕНЕНИЕ ЗДЕСЬ: Фильтрация PMT по индексам ###
                 for pmt_idx in range(N_OF_PMTS_IN_FRAME):
-                    # Включаем в пакет только PMT с индексами 12-17 и 30-35
                     if (12 <= pmt_idx <= 17) or (30 <= pmt_idx <= 35):
                         pmt_start_byte = frame_start_byte + (pmt_idx * FULL_PMT_L3_GEN_SIZE_BYTES)
                         pmt_data_only = record_data[pmt_start_byte : pmt_start_byte + DATA_ONLY_PER_PMT_SIZE_BYTES]
                         udp_payload.extend(pmt_data_only)
                 
-                # Отправляем собранный пакет, если он не пустой
                 if udp_payload:
                     sock.sendto(udp_payload, (ip_addr, port))
                     total_packets_sent += 1
@@ -114,8 +131,15 @@ def main():
                             f"(запись:{record_num}, кадр:{frame_idx+1}) "
                             f"(данные от 12 PMT) размером {len(udp_payload)} байт на {ip_addr}:{port}"
                         )
-
+                
                 time.sleep(pause_sec)
+
+                # ### НОВОЕ ИЗМЕНЕНИЕ 1: Логика завершения после первого фрейма ###
+                if args.first_frame:
+                    if args.verbose:
+                        print("\nОпция --first-frame: отправлен первый кадр, завершение работы.")
+                    done = True # Устанавливаем флаг для выхода из внешнего цикла
+                    break # Выходим из внутреннего цикла (по фреймам)
 
     except FileNotFoundError:
         print(f"Ошибка: файл не найден '{args.filename}'", file=sys.stderr)
