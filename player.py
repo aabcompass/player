@@ -8,7 +8,7 @@ import argparse
 import struct
 
 # ==============================================================================
-# Константы, основанные на pdmdata.h
+# Константы (без изменений)
 # ==============================================================================
 N_OF_PIXELS_PER_PMT = 64
 N_OF_KI_PER_PMT = 8
@@ -29,44 +29,63 @@ FRAMES_OFFSET = 28
 def main():
     parser = argparse.ArgumentParser(
         description="Проигрыватель файлов D3 Ловозера. Отправляет данные FRAME_SPB_2_L3_V0 по UDP.",
-        formatter_class=argparse.RawTextHelpFormatter
+        formatter_class=argparse.RawTextHelpFormatter,
+        # Добавляем пример использования прямо в справку
+        epilog="""Примеры использования:
+  # Чтение из файла с паузой 10 мс и отладкой
+  ./player.py -d 127.0.0.1:9090 -p 10 -v data.d3
+
+  # Чтение из stdin (pipe) с паузой 100 мс
+  cat data.d3 | ./player.py -d 192.168.1.50:12345 -p 100
+
+  # Отправка только первого кадра из файла
+  ./player.py -d 127.0.0.1:9090 -p 0 --first-frame data.d3
+"""
     )
-    # Позиционные аргументы
+    
+    # ### ИЗМЕНЕНИЕ: Аргументы сделаны именованными ###
+    
+    # Обязательные именованные аргументы
     parser.add_argument(
-        'filename', nargs='?', default=None,
+        '-d', '--destination',
+        type=str,
+        required=True,
+        help='(Обязательно) IP-адрес и порт назначения в формате "ip:port".'
+    )
+    parser.add_argument(
+        '-p', '--pause',
+        type=int,
+        required=True,
+        help='(Обязательно) Пауза между отправкой пакетов в миллисекундах.'
+    )
+    
+    # Позиционный аргумент для файла (остается для удобства)
+    parser.add_argument(
+        'filename',
+        nargs='?',
+        default=None,
         help='Имя входного файла. Если не указано, чтение производится из stdin.'
     )
-    parser.add_argument(
-        'destination', type=str, nargs='?',
-        help='IP-адрес и порт в формате "ip:port" (например, "127.0.0.1:9090").'
-    )
-    parser.add_argument(
-        'pause', type=int, nargs='?',
-        help='Пауза между отправкой пакетов в миллисекундах.'
-    )
+    
     # Опциональные флаги
     parser.add_argument(
-        '-v', '--verbose', action='store_true',
+        '-v', '--verbose',
+        action='store_true',
         help='Включить отладочный вывод.'
     )
-    # ### НОВОЕ ИЗМЕНЕНИЕ 1: Опция для первого фрейма ###
     parser.add_argument(
-        '--first-frame', action='store_true',
+        '--first-frame',
+        action='store_true',
         help='Отправить только первый фрейм из входных данных и завершить работу.'
     )
 
-    # ### НОВОЕ ИЗМЕНЕНИЕ 2: Проверка на запуск без аргументов ###
     if len(sys.argv) == 1:
         parser.print_help()
         sys.exit(0)
 
     args = parser.parse_args()
-
-    # Проверяем, что обязательные аргументы были предоставлены
-    if not all([args.destination, args.pause is not None]):
-        print("Ошибка: не указаны обязательные аргументы 'destination' и 'pause'.\n", file=sys.stderr)
-        parser.print_help()
-        sys.exit(1)
+    
+    # Ручная проверка обязательных аргументов больше не нужна, argparse сделает это сам.
 
     try:
         ip_addr, port_str = args.destination.split(':')
@@ -102,7 +121,7 @@ def main():
         while not done:
             record_data = input_stream.read(Z_DATA_TYPE_SCI_L3_V3_SIZE)
             if not record_data:
-                break # Конец файла/потока
+                break
             if len(record_data) < Z_DATA_TYPE_SCI_L3_V3_SIZE:
                 print(f"Ошибка: входной файл/поток обрезан.", file=sys.stderr)
                 break
@@ -134,12 +153,11 @@ def main():
                 
                 time.sleep(pause_sec)
 
-                # ### НОВОЕ ИЗМЕНЕНИЕ 1: Логика завершения после первого фрейма ###
                 if args.first_frame:
                     if args.verbose:
                         print("\nОпция --first-frame: отправлен первый кадр, завершение работы.")
-                    done = True # Устанавливаем флаг для выхода из внешнего цикла
-                    break # Выходим из внутреннего цикла (по фреймам)
+                    done = True
+                    break
 
     except FileNotFoundError:
         print(f"Ошибка: файл не найден '{args.filename}'", file=sys.stderr)
