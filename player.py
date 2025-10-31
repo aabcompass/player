@@ -30,7 +30,6 @@ def main():
     parser = argparse.ArgumentParser(
         description="Проигрыватель файлов D3 Ловозера. Отправляет данные FRAME_SPB_2_L3_V0 по UDP.",
         formatter_class=argparse.RawTextHelpFormatter,
-        # Добавляем пример использования прямо в справку
         epilog="""Примеры использования:
   # Чтение из файла с паузой 10 мс и отладкой
   ./player.py -d 127.0.0.1:9090 -p 10 -v data.d3
@@ -38,45 +37,38 @@ def main():
   # Чтение из stdin (pipe) с паузой 100 мс
   cat data.d3 | ./player.py -d 192.168.1.50:12345 -p 100
 
+  # Децимация: отправка каждого 10-го кадра
+  ./player.py -d 127.0.0.1:9090 -p 5 --decim 10 data.d3
+
   # Отправка только первого кадра из файла
   ./player.py -d 127.0.0.1:9090 -p 0 --first-frame data.d3
 """
     )
     
-    # ### ИЗМЕНЕНИЕ: Аргументы сделаны именованными ###
-    
-    # Обязательные именованные аргументы
     parser.add_argument(
-        '-d', '--destination',
-        type=str,
-        required=True,
+        '-d', '--destination', type=str, required=True,
         help='(Обязательно) IP-адрес и порт назначения в формате "ip:port".'
     )
     parser.add_argument(
-        '-p', '--pause',
-        type=int,
-        required=True,
+        '-p', '--pause', type=int, required=True,
         help='(Обязательно) Пауза между отправкой пакетов в миллисекундах.'
     )
-    
-    # Позиционный аргумент для файла (остается для удобства)
     parser.add_argument(
-        'filename',
-        nargs='?',
-        default=None,
+        'filename', nargs='?', default=None,
         help='Имя входного файла. Если не указано, чтение производится из stdin.'
     )
-    
-    # Опциональные флаги
     parser.add_argument(
-        '-v', '--verbose',
-        action='store_true',
+        '-v', '--verbose', action='store_true',
         help='Включить отладочный вывод.'
     )
     parser.add_argument(
-        '--first-frame',
-        action='store_true',
+        '--first-frame', action='store_true',
         help='Отправить только первый фрейм из входных данных и завершить работу.'
+    )
+    # ### НОВОЕ ИЗМЕНЕНИЕ: Опция децимации ###
+    parser.add_argument(
+        '--decim', type=int, default=1, metavar='N',
+        help='Отправлять только каждый N-й фрейм (по умолчанию: 1, т.е. все фреймы).'
     )
 
     if len(sys.argv) == 1:
@@ -85,7 +77,10 @@ def main():
 
     args = parser.parse_args()
     
-    # Ручная проверка обязательных аргументов больше не нужна, argparse сделает это сам.
+    # Проверка корректности значения для децимации
+    if args.decim <= 0:
+        print("Ошибка: значение для --decim должно быть положительным целым числом.", file=sys.stderr)
+        sys.exit(1)
 
     try:
         ip_addr, port_str = args.destination.split(':')
@@ -120,8 +115,7 @@ def main():
 
         while not done:
             record_data = input_stream.read(Z_DATA_TYPE_SCI_L3_V3_SIZE)
-            if not record_data:
-                break
+            if not record_data: break
             if len(record_data) < Z_DATA_TYPE_SCI_L3_V3_SIZE:
                 print(f"Ошибка: входной файл/поток обрезан.", file=sys.stderr)
                 break
@@ -131,34 +125,35 @@ def main():
                 print(f"\nОбработка записи #{record_num}...")
 
             for frame_idx in range(N_OF_FRAMES_D3_V0):
-                udp_payload = bytearray()
-                frame_start_byte = FRAMES_OFFSET + (frame_idx * FRAME_SPB_2_L3_V0_SIZE_BYTES)
+                # ### НОВОЕ ИЗМЕНЕНИЕ: Условие для децимации ###
+                if frame_idx % args.decim == 0:
+                    udp_payload = bytearray()
+                    frame_start_byte = FRAMES_OFFSET + (frame_idx * FRAME_SPB_2_L3_V0_SIZE_BYTES)
 
-                for pmt_idx in range(N_OF_PMTS_IN_FRAME):
-                    if (12 <= pmt_idx <= 17) or (30 <= pmt_idx <= 35):
-                        pmt_start_byte = frame_start_byte + (pmt_idx * FULL_PMT_L3_GEN_SIZE_BYTES)
-                        pmt_data_only = record_data[pmt_start_byte : pmt_start_byte + DATA_ONLY_PER_PMT_SIZE_BYTES]
-                        udp_payload.extend(pmt_data_only)
-                
-                if udp_payload:
-                    sock.sendto(udp_payload, (ip_addr, port))
-                    total_packets_sent += 1
+                    for pmt_idx in range(N_OF_PMTS_IN_FRAME):
+                        if (12 <= pmt_idx <= 17) or (30 <= pmt_idx <= 35):
+                            pmt_start_byte = frame_start_byte + (pmt_idx * FULL_PMT_L3_GEN_SIZE_BYTES)
+                            pmt_data_only = record_data[pmt_start_byte : pmt_start_byte + DATA_ONLY_PER_PMT_SIZE_BYTES]
+                            udp_payload.extend(pmt_data_only)
+                    
+                    if udp_payload:
+                        sock.sendto(udp_payload, (ip_addr, port))
+                        total_packets_sent += 1
 
-                    if args.verbose:
-                        print(
-                            f"Отправлен кадр N {total_packets_sent} "
-                            f"(запись:{record_num}, кадр:{frame_idx+1}) "
-                            f"(данные от 12 PMT) размером {len(udp_payload)} байт на {ip_addr}:{port}"
-                        )
-                
-                time.sleep(pause_sec)
+                        if args.verbose:
+                            print(
+                                f"Отправлен кадр N {total_packets_sent} "
+                                f"(запись:{record_num}, кадр:{frame_idx+1}) "
+                                f"(данные от 12 PMT) размером {len(udp_payload)} байт на {ip_addr}:{port}"
+                            )
+                    
+                    time.sleep(pause_sec)
 
-                if args.first_frame:
-                    if args.verbose:
-                        print("\nОпция --first-frame: отправлен первый кадр, завершение работы.")
-                    done = True
-                    break
-
+                    if args.first_frame:
+                        if args.verbose: print("\nОпция --first-frame: отправлен первый кадр, завершение работы.")
+                        done = True
+                        break
+    
     except FileNotFoundError:
         print(f"Ошибка: файл не найден '{args.filename}'", file=sys.stderr)
         sys.exit(1)
