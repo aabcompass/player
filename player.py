@@ -8,7 +8,7 @@ import argparse
 import struct
 
 # ==============================================================================
-# Константы, основанные на pdmdata.h
+# Константы, основанные на pdmdata.h (без изменений)
 # ==============================================================================
 N_OF_PIXELS_PER_PMT = 64
 N_OF_KI_PER_PMT = 8
@@ -18,33 +18,20 @@ N_OF_ECASIC_PER_PDM = 6
 N_OF_PMTS_IN_FRAME = N_OF_PMT_PER_ECASIC * N_OF_ECASIC_PER_PDM  # 36
 N_OF_FRAMES_D3_V0 = 100
 
-# === ИЗМЕНЕНИЯ ЗДЕСЬ ===
-# Размер данных одного PMT, которые мы отправляем (только поле `data`)
-DATA_ONLY_PER_PMT_SIZE_BYTES = N_OF_PIXELS_PER_PMT * 4  # 64 * 4 = 256 байт
-
-# Размер полной структуры PMT_3rd_L3_GEN (для правильного шага при чтении)
+DATA_ONLY_PER_PMT_SIZE_BYTES = N_OF_PIXELS_PER_PMT * 4  # 256 байт
 FULL_PMT_L3_GEN_SIZE_BYTES = (
     (N_OF_PIXELS_PER_PMT + N_OF_KI_PER_PMT + N_OF_SPARE_PER_PMT) * 4
 ) # 320 байт
-
-# Размер одного кадра FRAME_SPB_2_L3_V0 в исходных данных
 FRAME_SPB_2_L3_V0_SIZE_BYTES = N_OF_PMTS_IN_FRAME * FULL_PMT_L3_GEN_SIZE_BYTES
-# 36 * 320 = 11520 байт
-
-# Размер полной структуры Z_DATA_TYPE_SCI_L3_V3 для чтения из файла
-ZYNQ_BOARD_HEADER_SIZE = struct.calcsize('<II')
-TIMESTAMP_DUAL_SIZE = struct.calcsize('<II')
-Z_DATA_TYPE_SCI_L3_V3_SIZE = 1152064 # Рассчитано в предыдущей версии, остается тем же
-
-# Смещение до массива 'frames' внутри Z_DATA_TYPE_SCI_L3_V3
-FRAMES_OFFSET = 28 # Рассчитано в предыдущей версии, остается тем же
+Z_DATA_TYPE_SCI_L3_V3_SIZE = 1152064
+FRAMES_OFFSET = 28
 
 def main():
     parser = argparse.ArgumentParser(
         description="Проигрыватель файлов D3 Ловозера. Отправляет данные FRAME_SPB_2_L3_V0 по UDP.",
         formatter_class=argparse.RawTextHelpFormatter
     )
-    # ... (аргументы командной строки остаются без изменений) ...
+    # Аргументы командной строки остаются без изменений
     parser.add_argument(
         'filename', nargs='?', default=None,
         help='Имя входного файла. Если не указано, чтение производится из stdin.'
@@ -104,35 +91,30 @@ def main():
             if args.verbose:
                 print(f"\nОбработка записи #{record_num}...")
 
-            # === ИЗМЕНЕННАЯ ЛОГИКА ОТПРАВКИ ===
             for frame_idx in range(N_OF_FRAMES_D3_V0):
-                # Создаем буфер для одного большого UDP пакета
                 udp_payload = bytearray()
-
-                # Вычисляем начало текущего кадра в прочитанных данных
                 frame_start_byte = FRAMES_OFFSET + (frame_idx * FRAME_SPB_2_L3_V0_SIZE_BYTES)
 
-                # Собираем данные со всех 36 PMT
+                # ### ИЗМЕНЕНИЕ ЗДЕСЬ: Фильтрация PMT по индексам ###
                 for pmt_idx in range(N_OF_PMTS_IN_FRAME):
-                    # Находим начало данных для текущего PMT
-                    pmt_start_byte = frame_start_byte + (pmt_idx * FULL_PMT_L3_GEN_SIZE_BYTES)
-                    # Извлекаем только нужную часть (256 байт)
-                    pmt_data_only = record_data[pmt_start_byte : pmt_start_byte + DATA_ONLY_PER_PMT_SIZE_BYTES]
-                    # Добавляем в общий пакет
-                    udp_payload.extend(pmt_data_only)
+                    # Включаем в пакет только PMT с индексами 12-17 и 30-35
+                    if (12 <= pmt_idx <= 17) or (30 <= pmt_idx <= 35):
+                        pmt_start_byte = frame_start_byte + (pmt_idx * FULL_PMT_L3_GEN_SIZE_BYTES)
+                        pmt_data_only = record_data[pmt_start_byte : pmt_start_byte + DATA_ONLY_PER_PMT_SIZE_BYTES]
+                        udp_payload.extend(pmt_data_only)
+                
+                # Отправляем собранный пакет, если он не пустой
+                if udp_payload:
+                    sock.sendto(udp_payload, (ip_addr, port))
+                    total_packets_sent += 1
 
-                # Отправляем собранный пакет
-                sock.sendto(udp_payload, (ip_addr, port))
-                total_packets_sent += 1
+                    if args.verbose:
+                        print(
+                            f"Отправлен кадр N {total_packets_sent} "
+                            f"(запись:{record_num}, кадр:{frame_idx+1}) "
+                            f"(данные от 12 PMT) размером {len(udp_payload)} байт на {ip_addr}:{port}"
+                        )
 
-                if args.verbose:
-                    print(
-                        f"Отправлен кадр N {total_packets_sent} "
-                        f"(запись:{record_num}, кадр:{frame_idx+1}) "
-                        f"размером {len(udp_payload)} байт на {ip_addr}:{port}"
-                    )
-
-                # Пауза между отправкой кадров
                 time.sleep(pause_sec)
 
     except FileNotFoundError:
